@@ -1,22 +1,78 @@
-function switchPage(page) {
-    const pLedger = document.getElementById('page-ledger');
-    const pStrategy = document.getElementById('page-strategy');
-    const nLedger = document.getElementById('nav-ledger');
-    const nStrategy = document.getElementById('nav-strategy');
+function getCurrencyLabel() {
+    return state.settings?.currency || 'AED';
+}
 
-    if(page === 'ledger') {
-        pLedger.classList.remove('hidden');
-        pStrategy.classList.add('hidden');
-        nLedger.className = 'tab-btn tab-active';
-        nStrategy.className = 'tab-btn tab-inactive';
-        renderLedger();
-    } else {
-        pLedger.classList.add('hidden');
-        pStrategy.classList.remove('hidden');
-        nLedger.className = 'tab-btn tab-inactive';
-        nStrategy.className = 'tab-btn tab-active';
-        renderStrategy();
-    }
+function formatMoney(value, decimalsOverride) {
+    const decimals = Number.isInteger(decimalsOverride)
+        ? decimalsOverride
+        : (typeof state.settings?.decimals === 'number' ? state.settings.decimals : 2);
+    const num = Number(value) || 0;
+    return num.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+function formatSignedMoney(value) {
+    const prefix = value >= 0 ? '+' : '';
+    return prefix + formatMoney(value);
+}
+
+function updateCurrencyLabels() {
+    const label = getCurrencyLabel();
+    document.querySelectorAll('[data-currency]').forEach(el => {
+        el.textContent = label;
+    });
+    document.querySelectorAll('[data-currency-placeholder]').forEach(el => {
+        el.setAttribute('placeholder', `${label}...`);
+    });
+}
+
+function applySettings() {
+    const body = document.body;
+    if(!body) return;
+    const theme = state.settings?.theme || 'light';
+    body.classList.toggle('theme-dark', theme === 'dark');
+    body.classList.toggle('compact', !!state.settings?.compact);
+    updateCurrencyLabels();
+}
+
+function renderSettings() {
+    const currencyInput = document.getElementById('settings-currency');
+    if(!currencyInput) return;
+    currencyInput.value = getCurrencyLabel();
+    const decimalsSelect = document.getElementById('settings-decimals');
+    if(decimalsSelect) decimalsSelect.value = String(state.settings?.decimals ?? 2);
+    const confirmSurplus = document.getElementById('settings-confirm-surplus');
+    if(confirmSurplus) confirmSurplus.checked = !!state.settings?.confirmSurplusEdits;
+    const allowNegative = document.getElementById('settings-allow-negative');
+    if(allowNegative) allowNegative.checked = !!state.settings?.allowNegativeSurplus;
+    const themeSelect = document.getElementById('settings-theme');
+    if(themeSelect) themeSelect.value = state.settings?.theme || 'light';
+    const compactToggle = document.getElementById('settings-compact');
+    if(compactToggle) compactToggle.checked = !!state.settings?.compact;
+}
+
+function switchPage(page) {
+    const pages = {
+        ledger: document.getElementById('page-ledger'),
+        strategy: document.getElementById('page-strategy'),
+        settings: document.getElementById('page-settings')
+    };
+    const tabs = {
+        ledger: document.getElementById('nav-ledger'),
+        strategy: document.getElementById('nav-strategy'),
+        settings: document.getElementById('nav-settings')
+    };
+
+    Object.keys(pages).forEach(key => {
+        if(pages[key]) pages[key].classList.add('hidden');
+        if(tabs[key]) tabs[key].className = 'tab-btn tab-inactive';
+    });
+
+    if(pages[page]) pages[page].classList.remove('hidden');
+    if(tabs[page]) tabs[page].className = 'tab-btn tab-active';
+
+    if(page === 'ledger') renderLedger();
+    if(page === 'strategy') renderStrategy();
+    if(page === 'settings') renderSettings();
 }
 
 // --- STRATEGY RENDER ---
@@ -57,14 +113,14 @@ function renderStrategy() {
 
             // SMART BADGES FOR CORE ITEMS
             if (item.label === 'Food Base') {
-                const dailyRate = (item.amount / state.food.daysTotal).toFixed(2);
-                amortLabel = `<span id="food-base-daily-badge" class="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-bold ml-2">${dailyRate}/day</span>`;
+                const dailyRate = item.amount / state.food.daysTotal;
+                amortLabel = `<span id="food-base-daily-badge" class="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-bold ml-2">${formatMoney(dailyRate)}/day</span>`;
             } else if (item.label === 'Weekly Misc') {
-                const weeklyRate = (item.amount / 4).toFixed(0);
-                amortLabel = `<span class="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold ml-2">~${weeklyRate}/wk</span>`;
+                const weeklyRate = item.amount / 4;
+                amortLabel = `<span class="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold ml-2">~${formatMoney(weeklyRate)}/wk</span>`;
             } else if (item.label === 'Car Fund') {
-                const weeklyRate = (item.amount / 4).toFixed(0);
-                amortLabel = `<span class="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold ml-2">~${weeklyRate}/wk</span>`;
+                const weeklyRate = item.amount / 4;
+                amortLabel = `<span class="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold ml-2">~${formatMoney(weeklyRate)}/wk</span>`;
             }
 
             const inputAttr = isFoodBase
@@ -88,7 +144,7 @@ function renderStrategy() {
                 <div class="px-6 pb-3">
                     <div class="flex justify-between text-[9px] font-bold uppercase text-slate-300 mb-1">
                         <span>Daily Rate</span>
-                        <span>${dailyRateDisplay} AED</span>
+                        <span>${dailyRateDisplay} ${getCurrencyLabel()}</span>
                     </div>
                     <input type="range" id="food-daily-slider" min="0" max="${dailyRateMax}" step="1" value="${dailyRateDisplay}" oninput="syncFoodDailyRate('${sec.id}', ${idx}, this.value)" class="w-full">
                     <div class="flex justify-between text-[9px] font-bold uppercase text-slate-300 mt-1">
@@ -161,7 +217,7 @@ function renderLedger() {
     container.innerHTML = '';
 
     // WEEKLY LOGIC UPDATE: Use Weekly State
-    document.getElementById('bal-weekly').innerText = (state.weekly.balance || 0).toFixed(0);
+    document.getElementById('bal-weekly').innerText = formatMoney(state.weekly.balance || 0);
     const weekCount = document.getElementById('weekly-week-count');
     if (weekCount) weekCount.innerText = state.weekly?.week || 1;
     const nextBtn = document.getElementById('next-week-btn');
@@ -202,7 +258,7 @@ function renderLedger() {
                 </div>
                 <div>
                     <span class="text-[10px] font-bold uppercase tracking-widest text-indigo-200">General Savings</span>
-                    <div class="text-3xl font-black mt-1">${savBal.toLocaleString()} <span class="text-xs text-indigo-300">AED</span></div>
+                    <div class="text-3xl font-black mt-1">${formatMoney(savBal)} <span class="text-xs text-indigo-300">${getCurrencyLabel()}</span></div>
                 </div>
                 <button onclick="openTool('General Savings')" class="w-full py-2 bg-white/20 hover:bg-white/30 rounded-lg text-[10px] font-black uppercase tracking-widest transition text-center backdrop-blur-sm">
                     Manage
@@ -216,7 +272,7 @@ function renderLedger() {
                 </div>
                 <div>
                     <span class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Car Fund</span>
-                    <div class="text-3xl font-black mt-1">${carBal.toLocaleString()} <span class="text-xs text-slate-500">AED</span></div>
+                    <div class="text-3xl font-black mt-1">${formatMoney(carBal)} <span class="text-xs text-slate-500">${getCurrencyLabel()}</span></div>
                 </div>
                 <button onclick="openTool('Car Fund')" class="w-full py-2 bg-white/10 hover:bg-white/20 rounded-lg text-[10px] font-black uppercase tracking-widest transition text-center backdrop-blur-sm">
                     Manage
@@ -230,7 +286,7 @@ function renderLedger() {
                 </div>
                 <div>
                     <span class="text-[10px] font-bold uppercase tracking-widest text-amber-100">Payables</span>
-                    <div class="text-3xl font-black mt-1">${payBal.toLocaleString()} <span class="text-xs text-amber-100">AED</span></div>
+                    <div class="text-3xl font-black mt-1">${formatMoney(payBal)} <span class="text-xs text-amber-100">${getCurrencyLabel()}</span></div>
                 </div>
                 <button onclick="openTool('Payables')" class="w-full py-2 bg-white/20 hover:bg-white/30 rounded-lg text-[10px] font-black uppercase tracking-widest transition text-center backdrop-blur-sm">
                     Manage
@@ -271,8 +327,8 @@ function renderLedger() {
                         ${action}
                     </div>
                     <div onclick="openTool('${item.label}')" class="cursor-pointer">
-                        <p class="text-3xl font-black text-slate-800 tracking-tight">${bal.toFixed(0)}</p>
-                        <p class="text-[9px] font-bold text-slate-300 uppercase">AED Left</p>
+                        <p class="text-3xl font-black text-slate-800 tracking-tight">${formatMoney(bal)}</p>
+                        <p class="text-[9px] font-bold text-slate-300 uppercase">${getCurrencyLabel()} Left</p>
                     </div>
                 </div>
             `;
@@ -314,9 +370,9 @@ function updateFoodUI() {
     const fItem = fSec ? fSec.items.find(i=>i.label==='Food Base') : null;
     const foodBase = fItem ? fItem.amount : 840;
 
-    const daily = (foodBase / state.food.daysTotal).toFixed(2);
-    document.getElementById('daily-food-rate').innerText = daily;
-    document.getElementById('locked-funds-display').innerText = state.food.lockedAmount.toFixed(2);
+    const daily = foodBase / state.food.daysTotal;
+    document.getElementById('daily-food-rate').innerText = formatMoney(daily);
+    document.getElementById('locked-funds-display').innerText = formatMoney(state.food.lockedAmount);
 
     const dots = document.getElementById('food-day-dots');
     dots.innerHTML = '';
@@ -339,7 +395,7 @@ function updateFoodUI() {
         const cls = h.type === 'spend' ? 'text-slate-400' : (h.type === 'deficit' ? 'text-red-500' : 'text-emerald-500');
         return `
         <div class="flex justify-between items-center text-[10px] font-bold uppercase py-2 border-b border-slate-50 last:border-0">
-            <span class="${cls}">${label} ${h.amt.toFixed(0)}</span>
+            <span class="${cls}">${label} ${formatMoney(h.amt)}</span>
             <button onclick="undoFood(${i})" class="text-red-400 hover:text-red-600">Undo</button>
         </div>
     `;
@@ -348,12 +404,12 @@ function updateFoodUI() {
 
 function calculateReality() {
     const { totalLiquid } = getLiquidityBreakdown();
-    document.getElementById('reality-total').innerText = totalLiquid.toLocaleString(undefined, {minimumFractionDigits: 2});
-    document.getElementById('header-reality').innerText = totalLiquid.toLocaleString(undefined, {minimumFractionDigits: 2});
+    document.getElementById('reality-total').innerText = formatMoney(totalLiquid);
+    document.getElementById('header-reality').innerText = formatMoney(totalLiquid);
 }
 
 function updateGlobalUI() {
-    document.getElementById('global-surplus').innerText = (state.surplus >= 0 ? "+" : "") + state.surplus.toFixed(2);
+    document.getElementById('global-surplus').innerText = formatSignedMoney(state.surplus);
 
     const dTrigger = document.getElementById('deficit-trigger');
     const surpEl = document.getElementById('global-surplus');
@@ -377,7 +433,7 @@ function renderCategoryHistory() {
     document.getElementById('category-history-log').innerHTML = data.map(i => `
         <div class="flex justify-between items-center py-2 border-b border-slate-50 last:border-0 text-[10px]">
             <span class="font-bold text-slate-400 uppercase">${i.res}</span>
-            <span class="${i.amt < 0 ? 'text-red-500' : 'text-emerald-500'} font-black">${i.amt.toFixed(2)}</span>
+            <span class="${i.amt < 0 ? 'text-red-500' : 'text-emerald-500'} font-black">${formatMoney(i.amt)}</span>
         </div>
     `).join('') || '<div class="text-center text-slate-300 text-[10px] py-2">No History</div>';
 }

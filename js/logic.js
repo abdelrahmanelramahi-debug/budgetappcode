@@ -39,5 +39,12 @@ function getLiquidityBreakdown() {
     items.push({ label: 'Food Remainder', amount: remainder, meta: `${daysLeft} days` });
     totalLiquid += remainder;
 
+    // Food Buffer (locked funds)
+    const locked = state.food?.lockedAmount || 0;
+    if (locked > 0) {
+        items.push({ label: 'Food Buffer', amount: locked, meta: 'Locked' });
+        totalLiquid += locked;
+    }
+
     return { totalLiquid, items };
 }

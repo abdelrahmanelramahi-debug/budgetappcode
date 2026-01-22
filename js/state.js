@@ -1,6 +1,14 @@
 // DATA
 let state = {
     monthlyIncome: 4000,
+    settings: {
+        currency: 'AED',
+        decimals: 2,
+        confirmSurplusEdits: true,
+        allowNegativeSurplus: true,
+        theme: 'light',
+        compact: false
+    },
     strategy: [
         { id: 'sys_savings', label: 'System Savings', isSystem: true, items: [
             { label: 'General Savings', amount: 1457, isAutoCalculated: false },
@@ -77,6 +85,23 @@ function loadState() {
             state = { ...state, ...loaded };
             if(typeof state.monthlyIncome === 'undefined') state.monthlyIncome = 4000;
         } catch(e) { console.error("Save data corrupt, using default"); }
+    }
+    ensureSettings();
+}
+
+function ensureSettings() {
+    const defaults = {
+        currency: 'AED',
+        decimals: 2,
+        confirmSurplusEdits: true,
+        allowNegativeSurplus: true,
+        theme: 'light',
+        compact: false
+    };
+    if(!state.settings) state.settings = { ...defaults };
+    state.settings = { ...defaults, ...state.settings };
+    if (typeof state.settings.decimals !== 'number' || Number.isNaN(state.settings.decimals)) {
+        state.settings.decimals = 2;
     }
 }
 

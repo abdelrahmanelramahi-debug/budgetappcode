@@ -11,7 +11,7 @@ function updateIncome(val) {
 // --- REALITY CHECK ---
 function openRealityCheck() {
     const { totalLiquid } = getLiquidityBreakdown();
-    document.getElementById('rc-system-val').innerText = totalLiquid.toLocaleString(undefined, {minimumFractionDigits: 2});
+    document.getElementById('rc-system-val').innerText = formatMoney(totalLiquid);
     document.getElementById('rc-user-val').value = '';
     toggleModal('reality-check-modal', true);
 }
@@ -20,7 +20,7 @@ function closeRealityCheck() { toggleModal('reality-check-modal', false); }
 
 function openLiquidityBreakdown() {
     const { totalLiquid, items } = getLiquidityBreakdown();
-    document.getElementById('liquidity-breakdown-total').innerText = totalLiquid.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    document.getElementById('liquidity-breakdown-total').innerText = formatMoney(totalLiquid);
 
     const list = document.getElementById('liquidity-breakdown-list');
     list.innerHTML = items.map(item => `
@@ -29,7 +29,7 @@ function openLiquidityBreakdown() {
                 <span class="block text-xs font-bold text-slate-800">${item.label}</span>
                 ${item.meta ? `<span class="text-[10px] text-slate-400">${item.meta}</span>` : ''}
             </div>
-            <span class="text-xs font-black text-slate-700">${item.amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+            <span class="text-xs font-black text-slate-700">${formatMoney(item.amount)}</span>
         </div>
     `).join('') || '<div class="text-center text-[10px] text-slate-300 py-2">No liquidity items</div>';
 
@@ -567,9 +567,13 @@ function executeAction(type) {
     const val = parseFloat(document.getElementById('tool-value').value);
     if(val) {
         if (activeCat === 'Surplus') {
-            const actionLabel = type === 'deduct' ? 'deduct' : 'add';
-            const proceed = confirm(`You are about to ${actionLabel} funds directly to Surplus. This creates or removes money from thin air. Continue?`);
-            if (!proceed) return;
+            const delta = type === 'deduct' ? -val : val;
+            if(!canApplySurplusDelta(delta)) return;
+            if(shouldConfirmSurplusEdit()) {
+                const actionLabel = type === 'deduct' ? 'deduct' : 'add';
+                const proceed = confirm(`You are about to ${actionLabel} funds directly to Surplus. This creates or removes money from thin air. Continue?`);
+                if (!proceed) return;
+            }
         }
         pushToUndo();
         const mod = type==='deduct' ? -val : val;
@@ -728,7 +732,7 @@ function nextWeek() {
 
     const weeklyAmt = getWeeklyConfigAmount();
 
-    if(confirm(`Start next week? This will add +${weeklyAmt.toFixed(0)} AED to your weekly allowance.`)) {
+    if(confirm(`Start next week? This will add +${formatMoney(weeklyAmt)} ${getCurrencyLabel()} to your weekly allowance.`)) {
         pushToUndo();
         state.weekly.balance += weeklyAmt;
         state.weekly.week += 1;
@@ -745,14 +749,28 @@ function toggleSurplusControls() {
     const el = document.getElementById('surplus-controls');
     if(el.classList.contains('hidden')) el.classList.remove('hidden'); else el.classList.add('hidden');
 }
+function shouldConfirmSurplusEdit() {
+    return state.settings?.confirmSurplusEdits !== false;
+}
+function canApplySurplusDelta(delta) {
+    if(state.settings?.allowNegativeSurplus === false && (state.surplus + delta) < 0) {
+        alert('This would make Surplus negative. Enable "Allow negative Surplus" in Settings to proceed.');
+        return false;
+    }
+    return true;
+}
 function adjustGlobalSurplus(dir) {
     const val = parseFloat(document.getElementById('surplus-adjust-val').value);
     if(val) {
-        const actionLabel = dir > 0 ? 'add' : 'deduct';
-        const proceed = confirm(`You are about to ${actionLabel} funds directly to Surplus. This creates or removes money from thin air. Continue?`);
-        if (!proceed) return;
+        const delta = val * dir;
+        if(!canApplySurplusDelta(delta)) return;
+        if(shouldConfirmSurplusEdit()) {
+            const actionLabel = dir > 0 ? 'add' : 'deduct';
+            const proceed = confirm(`You are about to ${actionLabel} funds directly to Surplus. This creates or removes money from thin air. Continue?`);
+            if (!proceed) return;
+        }
         pushToUndo();
-        state.surplus += (val*dir);
+        state.surplus += delta;
         document.getElementById('surplus-adjust-val').value = '';
         saveState();
         updateGlobalUI();
@@ -805,7 +823,7 @@ function fastUpdateItemAmount(sid, idx, val) {
         const badge = document.getElementById('food-base-daily-badge');
         if(badge) {
             const dailyRate = state.food.daysTotal > 0 ? (num / state.food.daysTotal) : 0;
-            badge.innerText = `${dailyRate.toFixed(2)}/day`;
+            badge.innerText = `${formatMoney(dailyRate)}/day`;
         }
     }
 }
@@ -827,4 +845,78 @@ function syncFoodDailyRate(sid, idx, val) {
     const dailyRate = parseFloat(val) || 0;
     const total = dailyRate * (state.food.daysTotal || 0);
     syncFoodBaseAmount(sid, idx, total);
+}
+
+// Settings
+function saveSettingsFromUI() {
+    const currencyInput = document.getElementById('settings-currency');
+    const decimalsSelect = document.getElementById('settings-decimals');
+    const confirmSurplus = document.getElementById('settings-confirm-surplus');
+    const allowNegative = document.getElementById('settings-allow-negative');
+    const themeSelect = document.getElementById('settings-theme');
+    const compactToggle = document.getElementById('settings-compact');
+
+    const currency = currencyInput?.value?.trim() || 'AED';
+    const decimals = parseInt(decimalsSelect?.value, 10);
+
+    state.settings = {
+        ...state.settings,
+        currency,
+        decimals: Number.isNaN(decimals) ? 2 : decimals,
+        confirmSurplusEdits: !!confirmSurplus?.checked,
+        allowNegativeSurplus: !!allowNegative?.checked,
+        theme: themeSelect?.value || 'light',
+        compact: !!compactToggle?.checked
+    };
+
+    saveState();
+    applySettings();
+    renderLedger();
+    renderStrategy();
+    updateGlobalUI();
+    renderSettings();
+}
+
+function exportState() {
+    const payload = JSON.stringify(state, null, 2);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `finance-command-backup-${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+function triggerImport() {
+    const input = document.getElementById('settings-import-file');
+    if(input) input.click();
+}
+
+function importStateFile(file) {
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const imported = JSON.parse(e.target.result);
+            state = { ...state, ...imported };
+            ensureSystemSavings();
+            ensureCoreItems();
+            ensureSettings();
+            saveState();
+            location.reload();
+        } catch (err) {
+            alert('Import failed. The file is not valid JSON.');
+        }
+    };
+    reader.readAsText(file);
+}
+
+function resetAppData() {
+    const proceed = confirm('This will delete all local data and reload the app. Continue?');
+    if(!proceed) return;
+    localStorage.removeItem('financeCmd_state');
+    location.reload();
 }
