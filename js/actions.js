@@ -8,6 +8,160 @@ function updateIncome(val) {
     }
 }
 
+// --- STATE TRANSACTIONS ---
+function ensureAccountsState() {
+    if (!state.accounts) {
+        state.accounts = { surplus: 0, weekly: { balance: getWeeklyConfigAmount(), week: 1 }, buckets: {} };
+    }
+    if (!state.accounts.weekly) {
+        state.accounts.weekly = { balance: getWeeklyConfigAmount(), week: 1 };
+    }
+    if (!state.accounts.buckets) state.accounts.buckets = {};
+}
+
+function setItemBalance(label, value) {
+    ensureAccountsState();
+    if (isAccountLabel(label)) {
+        state.accounts.buckets[label] = value;
+    } else {
+        state.balances[label] = value;
+    }
+}
+
+function removeItemBalance(label) {
+    if (isAccountLabel(label)) {
+        // Keep account buckets, zero them instead of deleting
+        ensureAccountsState();
+        state.accounts.buckets[label] = 0;
+    } else if (state.balances[label] !== undefined) {
+        delete state.balances[label];
+    }
+}
+
+function adjustItemBalance(label, delta) {
+    const current = getItemBalance(label, 0);
+    setItemBalance(label, current + delta);
+}
+
+function getPlanAmount(label) {
+    for (let s of state.categories) {
+        const it = s.items.find(i => i.label === label);
+        if (it) return it.amount;
+    }
+    return 0;
+}
+
+function applyTransaction(tx) {
+    ensureAccountsState();
+
+    switch (tx.type) {
+        case 'adjust_surplus':
+            state.accounts.surplus += tx.delta;
+            break;
+        case 'adjust_item_balance':
+            adjustItemBalance(tx.label, tx.delta);
+            break;
+        case 'set_item_balance':
+            setItemBalance(tx.label, tx.value);
+            break;
+        case 'transfer':
+            if (tx.from === 'Surplus') {
+                state.accounts.surplus -= tx.amount;
+            } else {
+                adjustItemBalance(tx.from, -tx.amount);
+            }
+            if (tx.to === 'Surplus') {
+                state.accounts.surplus += tx.amount;
+            } else {
+                adjustItemBalance(tx.to, tx.amount);
+                if (tx.to === 'Weekly Misc') {
+                    state.accounts.weekly.balance += tx.amount;
+                }
+            }
+            break;
+        case 'add_item': {
+            const sec = state.categories.find(s=>s.id===tx.sid);
+            if (!sec) break;
+            sec.items.push({ label: tx.label, amount: tx.amount });
+            state.accounts.surplus -= tx.amount;
+            setItemBalance(tx.label, tx.amount);
+            break;
+        }
+        case 'delete_item': {
+            const sec = state.categories.find(s=>s.id===tx.sid);
+            if (!sec) break;
+            const item = sec.items[tx.idx];
+            if (!item) break;
+            const currentBalance = getItemBalance(item.label, item.amount);
+            state.accounts.surplus += currentBalance;
+            removeItemBalance(item.label);
+            sec.items.splice(tx.idx, 1);
+            break;
+        }
+        case 'delete_category': {
+            const idx = state.categories.findIndex(s => s.id === tx.sid);
+            if (idx === -1) break;
+            const sec = state.categories[idx];
+            sec.items.forEach(i => {
+                const bal = getItemBalance(i.label, i.amount);
+                state.accounts.surplus += bal;
+                removeItemBalance(i.label);
+            });
+            state.categories.splice(idx, 1);
+            break;
+        }
+        case 'rename_category': {
+            const sec = state.categories.find(s => s.id === tx.sid);
+            if (sec) sec.label = tx.label;
+            break;
+        }
+        case 'update_item_amount': {
+            const sec = state.categories.find(s => s.id === tx.sid);
+            if (!sec) break;
+            const item = sec.items[tx.idx];
+            if (!item) break;
+            const oldVal = item.amount;
+            const newVal = tx.amount;
+            const delta = newVal - oldVal;
+            item.amount = newVal;
+            delete item.amortData;
+            state.accounts.surplus -= delta;
+            if (isAccountLabel(item.label) || state.balances[item.label] !== undefined) {
+                adjustItemBalance(item.label, delta);
+            } else {
+                setItemBalance(item.label, newVal);
+            }
+            break;
+        }
+        case 'weekly_adjust':
+            adjustItemBalance('Weekly Misc', tx.delta);
+            state.accounts.weekly.balance += tx.delta;
+            break;
+        case 'weekly_next':
+            state.accounts.weekly.balance += tx.amount;
+            state.accounts.weekly.week += 1;
+            break;
+        case 'food_spend':
+            state.food.daysUsed++;
+            state.food.history.unshift({type:'spend', amt: tx.amount});
+            break;
+        case 'food_lock':
+            state.food.lockedAmount += tx.amount;
+            state.food.history.unshift({type:'lock', amt: tx.amount, label: tx.label});
+            break;
+        case 'food_release_all':
+            state.accounts.surplus += state.food.lockedAmount;
+            state.food.lockedAmount = 0;
+            break;
+        case 'food_deficit_raid':
+            state.accounts.surplus += tx.amount;
+            state.food.history.unshift({type:'deficit', amt: tx.amount});
+            break;
+        default:
+            break;
+    }
+}
+
 // --- REALITY CHECK ---
 function openRealityCheck() {
     const { totalLiquid } = getLiquidityBreakdown();
@@ -45,7 +199,7 @@ function confirmRealityCheck() {
     const delta = userVal - totalLiquid;
 
     pushToUndo();
-    state.surplus += delta;
+    applyTransaction({ type: 'adjust_surplus', delta });
     saveState();
 
     updateGlobalUI();
@@ -53,12 +207,12 @@ function confirmRealityCheck() {
 }
 
 function renameCategory(sid) {
-    const sec = state.strategy.find(s => s.id === sid);
+    const sec = state.categories.find(s => s.id === sid);
     if(!sec) return;
     const newName = prompt("Rename Category:", sec.label);
     if(newName && newName.trim() !== "") {
         pushToUndo();
-        sec.label = newName.trim();
+        applyTransaction({ type: 'rename_category', sid, label: newName.trim() });
         saveState();
         renderStrategy();
         renderLedger();
@@ -66,22 +220,13 @@ function renameCategory(sid) {
 }
 
 function deleteCategory(sid) {
-    const idx = state.strategy.findIndex(s => s.id === sid);
+    const idx = state.categories.findIndex(s => s.id === sid);
     if(idx === -1) return;
-    const sec = state.strategy[idx];
+    const sec = state.categories[idx];
 
     if(confirm(`Delete category "${sec.label}" and refund ${sec.items.length} items to Surplus?`)) {
         pushToUndo();
-
-        // Refund items
-        sec.items.forEach(i => {
-            const bal = state.balances[i.label] !== undefined ? state.balances[i.label] : i.amount;
-            state.surplus += bal;
-            if(state.balances[i.label]) delete state.balances[i.label];
-        });
-
-        // Remove category
-        state.strategy.splice(idx, 1);
+        applyTransaction({ type: 'delete_category', sid });
 
         saveState();
         renderStrategy();
@@ -103,7 +248,7 @@ function handleItemDrop(e, targetSid, targetIdx) {
     e.stopPropagation();
     if (dragType === 'item' && dragSrc && dragSrc.sid === targetSid && dragSrc.idx !== targetIdx) {
         pushToUndo();
-        const items = state.strategy.find(s => s.id === targetSid).items;
+        const items = state.categories.find(s => s.id === targetSid).items;
         const moved = items.splice(dragSrc.idx, 1)[0];
         items.splice(targetIdx, 0, moved);
         saveState();
@@ -114,7 +259,7 @@ function handleItemDrop(e, targetSid, targetIdx) {
 
 function handleCatDragStart(e, idx) {
     if(dragType === 'item') return;
-    const sec = state.strategy[idx];
+    const sec = state.categories[idx];
     if(sec.isSystem) return;
     dragType = 'category';
     dragSrc = { idx };
@@ -124,8 +269,8 @@ function handleCatDrop(e, targetIdx) {
     e.preventDefault();
     if (dragType === 'category' && dragSrc && dragSrc.idx !== targetIdx) {
         pushToUndo();
-        const moved = state.strategy.splice(dragSrc.idx, 1)[0];
-        state.strategy.splice(targetIdx, 0, moved);
+        const moved = state.categories.splice(dragSrc.idx, 1)[0];
+        state.categories.splice(targetIdx, 0, moved);
         saveState();
         renderStrategy();
     }
@@ -137,9 +282,9 @@ function openDeficitModal() {
     const list = document.getElementById('deficit-list');
     list.innerHTML = '';
 
-    const deficit = Math.abs(state.surplus);
+    const deficit = Math.abs(state.accounts.surplus);
     ensureWeeklyState();
-    const weeklyAvailable = Math.max(0, state.weekly.balance || 0);
+    const weeklyAvailable = Math.max(0, state.accounts.weekly.balance || 0);
     if (weeklyAvailable > 0) {
         list.innerHTML += `
             <div class="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
@@ -168,11 +313,11 @@ function openDeficitModal() {
         `;
     }
 
-    state.strategy.forEach(sec => {
+    state.categories.forEach(sec => {
         sec.items.forEach(item => {
             if(['Weekly Misc', 'Food Base'].includes(item.label)) return;
 
-            const bal = state.balances[item.label] !== undefined ? state.balances[item.label] : item.amount;
+            const bal = getItemBalance(item.label, item.amount);
             if(bal > 0) {
                 list.innerHTML += `
                     <div class="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
@@ -191,57 +336,56 @@ function openDeficitModal() {
 function closeDeficitModal() { toggleModal('deficit-modal', false); }
 
 function raidBucket(label, available) {
-    const deficit = Math.abs(state.surplus);
+    const deficit = Math.abs(state.accounts.surplus);
     const take = Math.min(deficit, available);
 
     if(take > 0) {
         pushToUndo();
-        if(state.balances[label] === undefined) state.balances[label] = available;
-
-        state.balances[label] -= take;
-        state.surplus += take;
+        if(getItemBalance(label, undefined) === undefined) setItemBalance(label, available);
+        applyTransaction({ type: 'adjust_item_balance', label, delta: -take });
+        applyTransaction({ type: 'adjust_surplus', delta: take });
 
         logHistory(label, -take, 'Deficit Cover');
         saveState();
         renderLedger();
-        if(state.surplus >= 0) closeDeficitModal();
+        if(state.accounts.surplus >= 0) closeDeficitModal();
         else openDeficitModal();
     }
 }
 
 function raidWeekly(available) {
-    const deficit = Math.abs(state.surplus);
+    const deficit = Math.abs(state.accounts.surplus);
     const take = Math.min(deficit, available);
     if (take > 0) {
         pushToUndo();
-        if(state.balances['Weekly Misc'] === undefined) {
+        if(getItemBalance('Weekly Misc', undefined) === undefined) {
             const fullAmt = getWeeklyConfigAmount() * 4;
-            state.balances['Weekly Misc'] = fullAmt;
+            setItemBalance('Weekly Misc', fullAmt);
         }
-        state.weekly.balance -= take;
-        state.balances['Weekly Misc'] -= take;
-        state.surplus += take;
+        state.accounts.weekly.balance -= take;
+        applyTransaction({ type: 'adjust_item_balance', label: 'Weekly Misc', delta: -take });
+        applyTransaction({ type: 'adjust_surplus', delta: take });
         logHistory('Weekly Misc', -take, 'Deficit Cover');
         saveState();
         renderLedger();
-        if(state.surplus >= 0) closeDeficitModal();
+        if(state.accounts.surplus >= 0) closeDeficitModal();
         else openDeficitModal();
     }
 }
 
 function raidFood(available) {
-    const deficit = Math.abs(state.surplus);
+    const deficit = Math.abs(state.accounts.surplus);
     const take = Math.min(deficit, available);
     const { fItem } = getFoodRemainderInfo();
     if (take > 0 && fItem) {
         pushToUndo();
         fItem.amount = Math.max(0, fItem.amount - take);
-        state.surplus += take;
-        state.food.history.unshift({type:'deficit', amt: take});
+        applyTransaction({ type: 'adjust_surplus', delta: take });
+        applyTransaction({ type: 'food_deficit_raid', amount: take });
         logHistory('Food Base', -take, 'Deficit Cover');
         saveState();
         renderLedger();
-        if(state.surplus >= 0) closeDeficitModal();
+        if(state.accounts.surplus >= 0) closeDeficitModal();
         else openDeficitModal();
     }
 }
@@ -265,25 +409,27 @@ function openDangerModal(type, targetId) {
         requiredDangerPhrase = "DELETE ALL";
         msg.innerText = "You are about to delete ALL budget categories and items. This will wipe your strategy.";
         pendingDangerAction = function() {
-            state.strategy = [];
+            state.categories = [];
             ensureSystemSavings();
             ensureCoreItems();
             state.balances = {};
+            ensureAccountsState();
+            state.accounts.buckets = {};
             initSurplusFromOpening();
             state.food = { daysTotal: 28, daysUsed: 0, lockedAmount: 0, history: [] };
-            state.weekly = { balance: 80, week: 1 };
+            state.accounts.weekly = { balance: getWeeklyConfigAmount(), week: 1 };
             state.histories = {};
         };
     } else if (type === 'section') {
         requiredDangerPhrase = "CLEAR ITEMS";
         msg.innerText = "You are about to remove all items from this category.";
         pendingDangerAction = function() {
-            const sec = state.strategy.find(s=>s.id === targetId);
+            const sec = state.categories.find(s=>s.id === targetId);
             if(sec) {
                 sec.items.forEach(i => {
-                    const bal = state.balances[i.label] !== undefined ? state.balances[i.label] : i.amount;
-                    state.surplus += bal;
-                    if(state.balances[i.label]) delete state.balances[i.label];
+                    const bal = getItemBalance(i.label, i.amount);
+                    state.accounts.surplus += bal;
+                    removeItemBalance(i.label);
                 });
                 sec.items = [];
             }
@@ -324,7 +470,7 @@ function confirmAddCategory() {
     if(label) {
         pushToUndo();
         const newId = 'cat_' + Date.now().toString(36);
-        state.strategy.push({
+        state.categories.push({
             id: newId,
             label: label,
             isLedgerLinked: true,
@@ -340,7 +486,7 @@ function confirmAddCategory() {
 // Amortization
 function openAmortTool(sid, idx) {
     currentAmort = {sid, idx};
-    const item = state.strategy.find(s=>s.id===sid).items[idx];
+    const item = state.categories.find(s=>s.id===sid).items[idx];
     document.getElementById('amortization-title').innerText = item.label;
     document.getElementById('amort-total').value = item.amortData ? item.amortData.total : item.amount;
     document.getElementById('amort-months').value = item.amortData ? item.amortData.months : 1;
@@ -356,25 +502,22 @@ function updateAmortCalc() {
 function saveAmortization() {
     const t = parseFloat(document.getElementById('amort-total').value);
     const m = parseFloat(document.getElementById('amort-months').value);
-    const item = state.strategy.find(s=>s.id===currentAmort.sid).items[currentAmort.idx];
+    const item = state.categories.find(s=>s.id===currentAmort.sid).items[currentAmort.idx];
 
     pushToUndo();
     const oldVal = item.amount;
     const newVal = t/m;
-    item.amount = newVal;
     item.amortData = {total: t, months: m};
-    state.surplus -= (newVal - oldVal);
+    applyTransaction({ type: 'update_item_amount', sid: currentAmort.sid, idx: currentAmort.idx, amount: newVal });
     saveState();
     renderStrategy(); toggleModal('amortization-tool', false);
 }
 function applyDirectCost() {
     const t = parseFloat(document.getElementById('amort-total').value);
-    const item = state.strategy.find(s=>s.id===currentAmort.sid).items[currentAmort.idx];
+    const item = state.categories.find(s=>s.id===currentAmort.sid).items[currentAmort.idx];
     pushToUndo();
-    const oldVal = item.amount;
-    item.amount = t;
     delete item.amortData;
-    state.surplus -= (t - oldVal);
+    applyTransaction({ type: 'update_item_amount', sid: currentAmort.sid, idx: currentAmort.idx, amount: t });
     saveState();
     renderStrategy(); toggleModal('amortization-tool', false);
 }
@@ -394,10 +537,7 @@ function confirmAddItem() {
     const amount = parseFloat(document.getElementById('new-item-amount').value);
     if(label && !isNaN(amount)) {
         pushToUndo();
-        const sec = state.strategy.find(s=>s.id===currentAddSectionId);
-        sec.items.push({label: label, amount: amount});
-        state.surplus -= amount;
-        state.balances[label] = amount;
+        applyTransaction({ type: 'add_item', sid: currentAddSectionId, label, amount });
         saveState();
         renderStrategy();
         closeAddItemTool();
@@ -413,14 +553,7 @@ function closeDeleteModal() { toggleModal('delete-modal', false); }
 function confirmDelete() {
     if(itemToDelete) {
         pushToUndo();
-        const sec = state.strategy.find(s=>s.id===itemToDelete.sid);
-        const item = sec.items[itemToDelete.idx];
-        const currentBalance = state.balances[item.label] !== undefined ? state.balances[item.label] : item.amount;
-        state.surplus += currentBalance;
-        if(state.balances[item.label] !== undefined) {
-            delete state.balances[item.label];
-        }
-        sec.items.splice(itemToDelete.idx, 1);
+        applyTransaction({ type: 'delete_item', sid: itemToDelete.sid, idx: itemToDelete.idx });
         saveState();
         renderStrategy();
         closeDeleteModal();
@@ -491,7 +624,7 @@ function renderTransferTargets(container) {
     container.innerHTML += `<div class="h-px bg-slate-200 my-2"></div>`;
 
     // Render Other Categories
-    state.strategy.forEach(sec => {
+    state.categories.forEach(sec => {
         sec.items.forEach(item => {
             // Skip if it is the current active category, or if it's already in priority list
             if(item.label === activeCat || ['Weekly Misc', 'General Savings'].includes(item.label)) return;
@@ -513,47 +646,17 @@ function executeTransfer(targetId) {
 
     pushToUndo();
 
-    // 1. Deduct from Source (activeCat)
-    if (activeCat === 'Surplus') {
-        state.surplus -= val;
-    } else {
-        if (state.balances[activeCat] === undefined) {
-             // Initialize if missing
-             let initAmt = 0;
-             state.strategy.forEach(s => {
-                 const it = s.items.find(i => i.label === activeCat);
-                 if(it) initAmt = it.amount;
-             });
-             state.balances[activeCat] = initAmt;
-        }
-        state.balances[activeCat] -= val;
+    if (activeCat !== 'Surplus' && getItemBalance(activeCat, undefined) === undefined) {
+        setItemBalance(activeCat, getPlanAmount(activeCat));
+    }
+    if (targetId !== 'Surplus' && getItemBalance(targetId, undefined) === undefined) {
+        setItemBalance(targetId, getPlanAmount(targetId));
     }
 
+    applyTransaction({ type: 'transfer', from: activeCat, to: targetId, amount: val });
+
     logHistory(activeCat, -val, `Trf to ${targetId}`);
-
-    // 2. Add to Target
-    if (targetId === 'Surplus') {
-        state.surplus += val;
-    } else {
-        // Handle Weekly Special Logic
-        if (targetId === 'Weekly Misc') {
-            state.weekly.balance += val; // Update view limit
-        }
-
-        // Standard Ledger Update
-        if (state.balances[targetId] === undefined) {
-            // Check if it's a strategy item to get default
-             let initAmt = 0;
-             if(targetId === 'General Savings') initAmt = 1457; // Fallback default
-             else {
-                 state.strategy.forEach(s => {
-                     const it = s.items.find(i => i.label === targetId);
-                     if(it) initAmt = it.amount;
-                 });
-             }
-             state.balances[targetId] = initAmt;
-        }
-        state.balances[targetId] += val;
+    if (targetId !== 'Surplus') {
         logHistory(targetId, val, `Trf from ${activeCat}`);
     }
 
@@ -579,17 +682,12 @@ function executeAction(type) {
         const mod = type==='deduct' ? -val : val;
 
         if (activeCat === 'Surplus') {
-            state.surplus += mod;
+            applyTransaction({ type: 'adjust_surplus', delta: mod });
         } else {
-            if (state.balances[activeCat] === undefined) {
-                let initAmt = 0;
-                state.strategy.forEach(s => {
-                    const it = s.items.find(i => i.label === activeCat);
-                    if(it) initAmt = it.amount;
-                });
-                state.balances[activeCat] = initAmt;
+            if (getItemBalance(activeCat, undefined) === undefined) {
+                setItemBalance(activeCat, getPlanAmount(activeCat));
             }
-            state.balances[activeCat] += mod;
+            applyTransaction({ type: 'adjust_item_balance', label: activeCat, delta: mod });
         }
 
         logHistory(activeCat, mod, 'Manual');
@@ -602,17 +700,12 @@ function executeAction(type) {
 
 function completeTask(label) {
     pushToUndo();
-    if (state.balances[label] === undefined) {
-         let initAmt = 0;
-         state.strategy.forEach(s => {
-             const it = s.items.find(i => i.label === label);
-             if(it) initAmt = it.amount;
-         });
-         state.balances[label] = initAmt;
+    if (getItemBalance(label, undefined) === undefined) {
+         setItemBalance(label, getPlanAmount(label));
     }
 
-    const current = state.balances[label];
-    state.balances[label] = 0;
+    const current = getItemBalance(label, 0);
+    setItemBalance(label, 0);
     logHistory(label, -current, 'Completed');
     saveState();
     renderLedger();
@@ -622,8 +715,7 @@ function completeTask(label) {
 function spendFoodDay() {
     if(state.food.daysUsed < state.food.daysTotal) {
         pushToUndo();
-        state.food.daysUsed++;
-        state.food.history.unshift({type:'spend', amt: 30});
+        applyTransaction({ type: 'food_spend', amount: 30 });
         saveState();
         renderLedger();
     }
@@ -634,7 +726,7 @@ function buyFoodDay() {
     if(!daysInput || daysInput <= 0) return;
 
     // 1. Calculate Cost based on Base/28
-    const fSec = state.strategy.find(s=>s.id==='core_essentials') || state.strategy.find(s=>s.id==='foundations');
+    const fSec = state.categories.find(s=>s.id==='core_essentials') || state.categories.find(s=>s.id==='foundations');
     const fItem = fSec ? fSec.items.find(i=>i.label==='Food Base') : null;
     const foodBase = fItem ? fItem.amount : 840;
     const dailyRate = foodBase / 28;
@@ -646,25 +738,22 @@ function buyFoodDay() {
     let coveredByWeekly = 0;
     let coveredBySurplus = 0;
 
-    if (state.weekly.balance >= totalCost) {
+    if (state.accounts.weekly.balance >= totalCost) {
         // Weekly covers it all
         coveredByWeekly = totalCost;
     } else {
         // Weekly covers some, Surplus covers rest
-        coveredByWeekly = Math.max(0, state.weekly.balance);
+        coveredByWeekly = Math.max(0, state.accounts.weekly.balance);
         coveredBySurplus = totalCost - coveredByWeekly;
     }
 
     // Apply Deductions
-    state.weekly.balance -= coveredByWeekly; // Visual limit
-    state.balances['Weekly Misc'] -= coveredByWeekly; // Actual ledger
-    state.surplus -= coveredBySurplus; // Deficit
+    state.accounts.weekly.balance -= coveredByWeekly; // Visual limit
+    applyTransaction({ type: 'adjust_item_balance', label: 'Weekly Misc', delta: -coveredByWeekly });
+    applyTransaction({ type: 'adjust_surplus', delta: -coveredBySurplus });
 
     // 3. Add to Visual (Buffer)
-    state.food.lockedAmount += totalCost;
-
-    // Log
-    state.food.history.unshift({type:'lock', amt: totalCost, label: `+${daysInput} Days`});
+    applyTransaction({ type: 'food_lock', amount: totalCost, label: `+${daysInput} Days` });
     document.getElementById('food-lock-val').value = '';
 
     saveState();
@@ -675,8 +764,7 @@ function buyFoodDay() {
 function releaseAllBuffer() {
     if(state.food.lockedAmount > 0) {
         pushToUndo();
-        state.surplus += state.food.lockedAmount;
-        state.food.lockedAmount = 0;
+        applyTransaction({ type: 'food_release_all' });
         saveState();
         renderLedger();
     }
@@ -688,7 +776,7 @@ function undoFood(idx) {
     else {
         // Restore funds (Simple restoration to surplus for now to avoid complex reverse waterfall)
         state.food.lockedAmount -= h.amt;
-        state.surplus += h.amt;
+        state.accounts.surplus += h.amt;
     }
     state.food.history.splice(idx, 1);
     saveState();
@@ -701,8 +789,7 @@ function inlineWeeklyAdjust(dir) {
     const val = parseFloat(document.getElementById('weekly-inline-val').value);
     if(val) {
         pushToUndo();
-        state.balances['Weekly Misc'] += (val*dir);
-        state.weekly.balance += (val*dir); // Update weekly state
+        applyTransaction({ type: 'weekly_adjust', delta: val * dir });
         logHistory('Weekly Misc', val*dir, 'Spend');
         document.getElementById('weekly-inline-val').value = '';
         saveState();
@@ -713,9 +800,8 @@ function topUpWeeklyInline() {
     const val = parseFloat(document.getElementById('weekly-inline-val').value);
     if(val) {
         pushToUndo();
-        state.surplus -= val;
-        state.balances['Weekly Misc'] += val;
-        state.weekly.balance += val; // Update weekly state
+        applyTransaction({ type: 'adjust_surplus', delta: -val });
+        applyTransaction({ type: 'weekly_adjust', delta: val });
         logHistory('Weekly Misc', val, 'Top Up');
         document.getElementById('weekly-inline-val').value = '';
         saveState();
@@ -725,7 +811,7 @@ function topUpWeeklyInline() {
 
 function nextWeek() {
     ensureWeeklyState();
-    if (state.weekly.week >= WEEKLY_MAX_WEEKS) {
+    if (state.accounts.weekly.week >= WEEKLY_MAX_WEEKS) {
         alert('Week limit reached. Weekly allowance is capped at 4 weeks.');
         return;
     }
@@ -734,8 +820,7 @@ function nextWeek() {
 
     if(confirm(`Start next week? This will add +${formatMoney(weeklyAmt)} ${getCurrencyLabel()} to your weekly allowance.`)) {
         pushToUndo();
-        state.weekly.balance += weeklyAmt;
-        state.weekly.week += 1;
+        applyTransaction({ type: 'weekly_next', amount: weeklyAmt });
         // Note: We don't add to state.balances['Weekly Misc'] here because that bucket holds the *total* month's assets already.
         // The 'Weekly Misc' balance drains as we spend.
         // The 'state.weekly.balance' acts as a view/limit for the current week.
@@ -753,7 +838,7 @@ function shouldConfirmSurplusEdit() {
     return state.settings?.confirmSurplusEdits !== false;
 }
 function canApplySurplusDelta(delta) {
-    if(state.settings?.allowNegativeSurplus === false && (state.surplus + delta) < 0) {
+    if(state.settings?.allowNegativeSurplus === false && (state.accounts.surplus + delta) < 0) {
         alert('This would make Surplus negative. Enable "Allow negative Surplus" in Settings to proceed.');
         return false;
     }
@@ -770,7 +855,7 @@ function adjustGlobalSurplus(dir) {
             if (!proceed) return;
         }
         pushToUndo();
-        state.surplus += delta;
+        applyTransaction({ type: 'adjust_surplus', delta });
         document.getElementById('surplus-adjust-val').value = '';
         saveState();
         updateGlobalUI();
@@ -780,25 +865,10 @@ function adjustGlobalSurplus(dir) {
 // Fast Update (Budget Plan) - FIXED: No full re-render on input
 function fastUpdateItemAmount(sid, idx, val) {
     const num = parseFloat(val) || 0;
-    const sec = state.strategy.find(s => s.id === sid);
+    const sec = state.categories.find(s => s.id === sid);
     const item = sec.items[idx];
 
-    // Calculate Delta to adjust Surplus
-    const oldVal = item.amount;
-    const delta = num - oldVal;
-
-    item.amount = num;
-    delete item.amortData;
-
-    // Adjust Surplus inversely (Budget UP = Surplus DOWN)
-    state.surplus -= delta;
-
-    // Update Balance if it exists
-    if(state.balances[item.label] !== undefined) {
-        state.balances[item.label] += delta;
-    } else {
-        state.balances[item.label] = num;
-    }
+    applyTransaction({ type: 'update_item_amount', sid, idx, amount: num });
 
     saveState();
 
@@ -847,6 +917,76 @@ function syncFoodDailyRate(sid, idx, val) {
     syncFoodBaseAmount(sid, idx, total);
 }
 
+// Paycheck + Allocation
+function getAllocatableItems() {
+    const items = [];
+    state.categories.forEach(sec => {
+        sec.items.forEach(item => {
+            if (item.label === 'Food Base') return;
+            if (item.amount > 0) {
+                items.push({ label: item.label, amount: item.amount });
+            }
+        });
+    });
+    return items;
+}
+
+function allocateByPlan(amount) {
+    const items = getAllocatableItems();
+    const totalPlan = items.reduce((sum, i) => sum + i.amount, 0);
+    if (totalPlan <= 0) return;
+
+    items.forEach(item => {
+        const portion = (item.amount / totalPlan) * amount;
+        if (portion > 0) {
+            applyTransaction({ type: 'transfer', from: 'Surplus', to: item.label, amount: portion });
+            logHistory(item.label, portion, 'Paycheck');
+        }
+    });
+}
+
+function applyPaycheck(autoAllocate) {
+    const val = parseFloat(document.getElementById('paycheck-amount').value);
+    if(!val || val <= 0) return;
+    pushToUndo();
+    applyTransaction({ type: 'adjust_surplus', delta: val });
+    if (autoAllocate) {
+        allocateByPlan(val);
+    }
+    document.getElementById('paycheck-amount').value = '';
+    saveState();
+    renderLedger();
+    renderStrategy();
+    updateGlobalUI();
+}
+
+function allocateUnassigned() {
+    const surplus = state.accounts.surplus;
+    if (surplus <= 0) return;
+    const items = getAllocatableItems().map(item => {
+        const current = getItemBalance(item.label, 0);
+        const deficit = Math.max(0, item.amount - current);
+        return { ...item, deficit };
+    }).filter(item => item.deficit > 0);
+
+    const totalDeficit = items.reduce((sum, i) => sum + i.deficit, 0);
+    if (totalDeficit <= 0) return;
+
+    const toAllocate = Math.min(surplus, totalDeficit);
+    pushToUndo();
+    items.forEach(item => {
+        const portion = (item.deficit / totalDeficit) * toAllocate;
+        if (portion > 0) {
+            applyTransaction({ type: 'transfer', from: 'Surplus', to: item.label, amount: portion });
+            logHistory(item.label, portion, 'Auto Allocate');
+        }
+    });
+    saveState();
+    renderLedger();
+    renderStrategy();
+    updateGlobalUI();
+}
+
 // Settings
 function saveSettingsFromUI() {
     const currencyInput = document.getElementById('settings-currency');
@@ -877,6 +1017,26 @@ function saveSettingsFromUI() {
     renderSettings();
 }
 
+function rebuildTotals() {
+    pushToUndo();
+    ensureAccountsState();
+    state.categories.forEach(sec => {
+        sec.items.forEach(item => {
+            if (isAccountLabel(item.label)) {
+                if (state.accounts.buckets[item.label] === undefined) {
+                    state.accounts.buckets[item.label] = item.amount;
+                }
+            } else if (state.balances[item.label] === undefined) {
+                state.balances[item.label] = item.amount;
+            }
+        });
+    });
+    saveState();
+    renderLedger();
+    renderStrategy();
+    updateGlobalUI();
+}
+
 function exportState() {
     const payload = JSON.stringify(state, null, 2);
     const blob = new Blob([payload], { type: 'application/json' });
@@ -902,6 +1062,7 @@ function importStateFile(file) {
         try {
             const imported = JSON.parse(e.target.result);
             state = { ...state, ...imported };
+            migrateState();
             ensureSystemSavings();
             ensureCoreItems();
             ensureSettings();

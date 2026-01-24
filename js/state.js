@@ -1,5 +1,8 @@
 // DATA
+const ACCOUNT_LABELS = ['General Savings', 'Payables', 'Car Fund', 'Weekly Misc'];
+
 let state = {
+    schemaVersion: 2,
     monthlyIncome: 4000,
     settings: {
         currency: 'AED',
@@ -9,7 +12,7 @@ let state = {
         theme: 'light',
         compact: false
     },
-    strategy: [
+    categories: [
         { id: 'sys_savings', label: 'System Savings', isSystem: true, items: [
             { label: 'General Savings', amount: 1457, isAutoCalculated: false },
             { label: 'Payables', amount: 0, isAutoCalculated: false }
@@ -43,18 +46,23 @@ let state = {
             { label: 'Adib', amount: 26 }
         ]}
     ],
+    accounts: {
+        surplus: 0,
+        weekly: { balance: 80, week: 1 },
+        buckets: {
+            'General Savings': 1457,
+            'Payables': 0,
+            'Car Fund': 500,
+            'Weekly Misc': 320
+        }
+    },
     balances: {
-        'Weekly Misc': 320, 'Car Fund': 500,
         'Boron Complex': 80, 'Protein': 150, 'Creatine': 100, 'Mg, Sl, Zc': 70,
         'Oats': 60, 'Eggs': 42,
         'Mixed Nuts': 91, 'Misc': 50, 'Hair cut': 35, 'Toilet Paper': 16,
-        'Etisalat': 100, 'Tarteel': 35, 'YouTube': 24, 'iCloud': 4, 'Adib': 26,
-        'General Savings': 1457,
-        'Payables': 0
+        'Etisalat': 100, 'Tarteel': 35, 'YouTube': 24, 'iCloud': 4, 'Adib': 26
     },
     food: { daysTotal: 28, daysUsed: 0, lockedAmount: 0, history: [] },
-    weekly: { balance: 80, week: 1 },
-    surplus: 0,
     histories: {}
 };
 
@@ -86,7 +94,73 @@ function loadState() {
             if(typeof state.monthlyIncome === 'undefined') state.monthlyIncome = 4000;
         } catch(e) { console.error("Save data corrupt, using default"); }
     }
+    migrateState();
     ensureSettings();
+}
+
+function migrateState() {
+    const schema = state.schemaVersion || 1;
+    if (schema >= 2) {
+        if (!state.categories && state.strategy) {
+            state.categories = state.strategy;
+        }
+        if (!state.accounts) {
+            state.accounts = {
+                surplus: state.surplus || 0,
+                weekly: state.weekly || { balance: getWeeklyConfigAmount(), week: 1 },
+                buckets: {}
+            };
+        }
+        if (!state.accounts.buckets) state.accounts.buckets = {};
+        ACCOUNT_LABELS.forEach(label => {
+            if (state.accounts.buckets[label] === undefined) {
+                const legacy = state.balances?.[label];
+                if (legacy !== undefined) state.accounts.buckets[label] = legacy;
+            }
+        });
+        if (!state.balances) state.balances = {};
+        ACCOUNT_LABELS.forEach(label => {
+            if (state.balances[label] !== undefined) delete state.balances[label];
+        });
+        state.schemaVersion = 2;
+        return;
+    }
+
+    const legacyStrategy = state.strategy || state.categories || [];
+    const legacyBalances = state.balances || {};
+    const legacyWeekly = state.weekly || { balance: getWeeklyConfigAmount(), week: 1 };
+
+    const buckets = {};
+    ACCOUNT_LABELS.forEach(label => {
+        const bal = legacyBalances[label];
+        if (bal !== undefined) buckets[label] = bal;
+    });
+
+    state = {
+        ...state,
+        schemaVersion: 2,
+        categories: legacyStrategy,
+        accounts: {
+            surplus: state.surplus || 0,
+            weekly: legacyWeekly,
+            buckets: {
+                'General Savings': buckets['General Savings'] ?? 0,
+                'Payables': buckets['Payables'] ?? 0,
+                'Car Fund': buckets['Car Fund'] ?? 0,
+                'Weekly Misc': buckets['Weekly Misc'] ?? 0
+            }
+        },
+        balances: Object.keys(legacyBalances).reduce((acc, key) => {
+            if (!ACCOUNT_LABELS.includes(key)) acc[key] = legacyBalances[key];
+            return acc;
+        }, {}),
+        food: state.food || { daysTotal: 28, daysUsed: 0, lockedAmount: 0, history: [] },
+        histories: state.histories || {}
+    };
+}
+
+function isAccountLabel(label) {
+    return ACCOUNT_LABELS.includes(label);
 }
 
 function ensureSettings() {
@@ -106,9 +180,9 @@ function ensureSettings() {
 }
 
 function ensureSystemSavings() {
-    let sys = state.strategy.find(s => s.id === 'sys_savings');
+    let sys = state.categories.find(s => s.id === 'sys_savings');
     if(!sys) {
-        state.strategy.unshift({
+        state.categories.unshift({
             id: 'sys_savings',
             label: 'System Savings',
             isSystem: true,
@@ -130,10 +204,10 @@ function ensureSystemSavings() {
 }
 
 function ensureCoreItems() {
-    let core = state.strategy.find(s => s.id === 'core_essentials');
+    let core = state.categories.find(s => s.id === 'core_essentials');
 
     if (!core) {
-        state.strategy.splice(1, 0, {
+        state.categories.splice(1, 0, {
             id: 'core_essentials',
             label: 'Core Essentials',
             isSystem: true,
@@ -150,7 +224,7 @@ function ensureCoreItems() {
         }
     }
 
-    state.strategy.forEach(sec => {
+    state.categories.forEach(sec => {
         if (sec.id !== 'core_essentials') {
             sec.items = sec.items.filter(i =>
                 i.label !== 'Weekly Misc' &&
@@ -162,27 +236,30 @@ function ensureCoreItems() {
 }
 
 function getWeeklyConfigAmount() {
-    const misc = state.strategy.find(s=>s.id==='core_essentials')?.items.find(i=>i.label==='Weekly Misc');
+    const misc = state.categories.find(s=>s.id==='core_essentials')?.items.find(i=>i.label==='Weekly Misc');
     const fullAmt = misc ? misc.amount : 320;
     return fullAmt / 4;
 }
 
 function ensureWeeklyState() {
     const weeklyAmt = getWeeklyConfigAmount();
-    if (!state.weekly) {
-        state.weekly = { balance: weeklyAmt, week: 1 };
+    if (!state.accounts) {
+        state.accounts = { surplus: 0, weekly: { balance: weeklyAmt, week: 1 }, buckets: {} };
     }
-    if (typeof state.weekly.balance !== 'number' || Number.isNaN(state.weekly.balance)) {
-        state.weekly.balance = weeklyAmt;
+    if (!state.accounts.weekly) {
+        state.accounts.weekly = { balance: weeklyAmt, week: 1 };
     }
-    if (typeof state.weekly.week !== 'number' || Number.isNaN(state.weekly.week)) {
-        state.weekly.week = 1;
+    if (typeof state.accounts.weekly.balance !== 'number' || Number.isNaN(state.accounts.weekly.balance)) {
+        state.accounts.weekly.balance = weeklyAmt;
     }
-    state.weekly.week = Math.min(WEEKLY_MAX_WEEKS, Math.max(1, Math.round(state.weekly.week)));
+    if (typeof state.accounts.weekly.week !== 'number' || Number.isNaN(state.accounts.weekly.week)) {
+        state.accounts.weekly.week = 1;
+    }
+    state.accounts.weekly.week = Math.min(WEEKLY_MAX_WEEKS, Math.max(1, Math.round(state.accounts.weekly.week)));
 }
 
 function getFoodRemainderInfo() {
-    const fSec = state.strategy.find(s=>s.id==='core_essentials') || state.strategy.find(s=>s.id==='foundations');
+    const fSec = state.categories.find(s=>s.id==='core_essentials') || state.categories.find(s=>s.id==='foundations');
     const fItem = fSec ? fSec.items.find(i=>i.label==='Food Base') : null;
     const foodBase = fItem ? fItem.amount : 0;
     const daysLeft = state.food.daysTotal - state.food.daysUsed;
@@ -193,15 +270,24 @@ function getFoodRemainderInfo() {
 
 function initSurplusFromOpening() {
     let allocated = 0;
-    state.strategy.forEach(sec => {
+    if (!state.accounts) {
+        state.accounts = { surplus: 0, weekly: { balance: getWeeklyConfigAmount(), week: 1 }, buckets: {} };
+    }
+    if (!state.accounts.buckets) state.accounts.buckets = {};
+
+    state.categories.forEach(sec => {
         sec.items.forEach(item => {
             allocated += item.amount;
-            if(state.balances[item.label] === undefined) {
+            if (isAccountLabel(item.label)) {
+                if (state.accounts.buckets[item.label] === undefined) {
+                    state.accounts.buckets[item.label] = item.amount;
+                }
+            } else if(state.balances[item.label] === undefined) {
                 state.balances[item.label] = item.amount;
             }
         });
     });
-    state.surplus = state.monthlyIncome - allocated;
+    state.accounts.surplus = state.monthlyIncome - allocated;
 }
 
 // UNDO SYSTEM

@@ -1,29 +1,36 @@
 // --- LOGIC ---
+function getItemBalance(label, fallback = 0) {
+    if (isAccountLabel(label)) {
+        return state.accounts?.buckets?.[label] ?? fallback;
+    }
+    return state.balances?.[label] !== undefined ? state.balances[label] : fallback;
+}
+
 function getLiquidityBreakdown() {
     let totalLiquid = 0;
     const items = [];
 
     items.push({
         label: 'Surplus (Unallocated)',
-        amount: state.surplus
+        amount: state.accounts?.surplus || 0
     });
-    totalLiquid += state.surplus;
+    totalLiquid += state.accounts?.surplus || 0;
 
     ensureWeeklyState();
 
-    state.strategy.forEach(sec => {
+    state.categories.forEach(sec => {
         sec.items.forEach(item => {
             if(item.label === 'Food Base' || item.label === 'Weekly Misc') return;
 
-            const currentVal = state.balances[item.label] !== undefined ? state.balances[item.label] : item.amount;
+            const currentVal = getItemBalance(item.label, item.amount);
             items.push({ label: item.label, amount: currentVal });
             totalLiquid += currentVal;
         });
     });
 
     const weeklyAmt = getWeeklyConfigAmount();
-    const currentWeekBalance = Math.max(0, state.weekly.balance || 0);
-    const remainingWeeks = Math.max(0, WEEKLY_MAX_WEEKS - (state.weekly.week || 1));
+    const currentWeekBalance = Math.max(0, state.accounts.weekly.balance || 0);
+    const remainingWeeks = Math.max(0, WEEKLY_MAX_WEEKS - (state.accounts.weekly.week || 1));
     const outstandingWeeks = remainingWeeks * weeklyAmt;
 
     items.push({ label: 'Weekly (Current Week)', amount: currentWeekBalance });
@@ -47,4 +54,8 @@ function getLiquidityBreakdown() {
     }
 
     return { totalLiquid, items };
+}
+
+function getCurrentBalance() {
+    return getLiquidityBreakdown().totalLiquid;
 }

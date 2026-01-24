@@ -84,7 +84,7 @@ function renderStrategy() {
     let customHtml = '';
     let fullHtml = ''; // For fallback check
 
-    state.strategy.forEach((sec, secIdx) => {
+    state.categories.forEach((sec, secIdx) => {
         const secTotal = sec.items.reduce((a, b) => a + b.amount, 0);
         const perc = state.monthlyIncome > 0 ? Math.round((secTotal/state.monthlyIncome)*100) : 0;
 
@@ -217,12 +217,12 @@ function renderLedger() {
     container.innerHTML = '';
 
     // WEEKLY LOGIC UPDATE: Use Weekly State
-    document.getElementById('bal-weekly').innerText = formatMoney(state.weekly.balance || 0);
+    document.getElementById('bal-weekly').innerText = formatMoney(state.accounts.weekly.balance || 0);
     const weekCount = document.getElementById('weekly-week-count');
-    if (weekCount) weekCount.innerText = state.weekly?.week || 1;
+    if (weekCount) weekCount.innerText = state.accounts.weekly?.week || 1;
     const nextBtn = document.getElementById('next-week-btn');
     if (nextBtn) {
-        if ((state.weekly?.week || 1) >= WEEKLY_MAX_WEEKS) {
+        if ((state.accounts.weekly?.week || 1) >= WEEKLY_MAX_WEEKS) {
             nextBtn.classList.add('opacity-50', 'pointer-events-none');
             nextBtn.title = 'Week limit reached';
             nextBtn.disabled = true;
@@ -236,13 +236,12 @@ function renderLedger() {
     // --- NEW: MAJOR FUNDS SECTION (Savings & Car) ---
     // Extract values safely
     const getBal = (lbl) => {
-        if(state.balances[lbl] !== undefined) return state.balances[lbl];
-        // Fallback to finding it in strategy
-        for(let s of state.strategy) {
+        // Fallback to planned amount if no live balance
+        for(let s of state.categories) {
             const i = s.items.find(x=>x.label===lbl);
-            if(i) return i.amount;
+            if(i) return getItemBalance(lbl, i.amount);
         }
-        return 0;
+        return getItemBalance(lbl, 0);
     };
 
     const savBal = getBal('General Savings');
@@ -297,7 +296,7 @@ function renderLedger() {
     container.innerHTML += majorHtml;
 
     // Create categorical dropdowns matching the strategy structure
-    state.strategy.forEach(sec => {
+    state.categories.forEach(sec => {
         // Filter items to skip hardcoded UI elements AND the Major Funds we just rendered manually
         const relevantItems = sec.items.filter(item =>
             !['Weekly Misc', 'Food Base', 'General Savings', 'Car Fund', 'Payables'].includes(item.label)
@@ -309,7 +308,7 @@ function renderLedger() {
 
         let gridHtml = '';
         relevantItems.forEach(item => {
-            let bal = state.balances[item.label] !== undefined ? state.balances[item.label] : item.amount;
+            let bal = getItemBalance(item.label, item.amount);
 
             const opacity = bal === 0 ? 'opacity-50' : 'opacity-100';
             // Savings check removed from here since it's handled above
@@ -366,7 +365,7 @@ function toggleLedgerSection(id) {
 }
 
 function updateFoodUI() {
-    const fSec = state.strategy.find(s=>s.id==='core_essentials') || state.strategy.find(s=>s.id==='foundations');
+    const fSec = state.categories.find(s=>s.id==='core_essentials') || state.categories.find(s=>s.id==='foundations');
     const fItem = fSec ? fSec.items.find(i=>i.label==='Food Base') : null;
     const foodBase = fItem ? fItem.amount : 840;
 
@@ -403,18 +402,18 @@ function updateFoodUI() {
 }
 
 function calculateReality() {
-    const { totalLiquid } = getLiquidityBreakdown();
-    document.getElementById('reality-total').innerText = formatMoney(totalLiquid);
-    document.getElementById('header-reality').innerText = formatMoney(totalLiquid);
+    const total = getCurrentBalance();
+    document.getElementById('reality-total').innerText = formatMoney(total);
+    document.getElementById('header-reality').innerText = formatMoney(total);
 }
 
 function updateGlobalUI() {
-    document.getElementById('global-surplus').innerText = formatSignedMoney(state.surplus);
+    document.getElementById('global-surplus').innerText = formatSignedMoney(state.accounts.surplus);
 
     const dTrigger = document.getElementById('deficit-trigger');
     const surpEl = document.getElementById('global-surplus');
 
-    if(state.surplus < 0) {
+    if(state.accounts.surplus < 0) {
         dTrigger.classList.remove('hidden');
         surpEl.classList.remove('text-emerald-600');
         surpEl.classList.add('text-red-600');
