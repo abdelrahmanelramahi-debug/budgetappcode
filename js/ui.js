@@ -259,7 +259,7 @@ function renderLedger() {
                     <span class="text-[10px] font-bold uppercase tracking-widest text-indigo-200">General Savings</span>
                     <div class="text-3xl font-black mt-1">${formatMoney(savBal)} <span class="text-xs text-indigo-300">${getCurrencyLabel()}</span></div>
                 </div>
-                <button onclick="openTool('General Savings')" class="w-full py-2 bg-white/20 hover:bg-white/30 rounded-lg text-[10px] font-black uppercase tracking-widest transition text-center backdrop-blur-sm">
+                <button onclick="openSavingsBuckets()" class="w-full py-2 bg-white/20 hover:bg-white/30 rounded-lg text-[10px] font-black uppercase tracking-widest transition text-center backdrop-blur-sm">
                     Manage
                 </button>
             </div>

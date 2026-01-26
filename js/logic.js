@@ -1,5 +1,14 @@
 // --- LOGIC ---
+function getSavingsTotal() {
+    const buckets = state.accounts?.savingsBuckets;
+    if (!buckets) return state.accounts?.buckets?.['General Savings'] ?? 0;
+    return Object.values(buckets).reduce((sum, val) => sum + (val || 0), 0);
+}
+
 function getItemBalance(label, fallback = 0) {
+    if (label === 'General Savings') {
+        return getSavingsTotal();
+    }
     if (isAccountLabel(label)) {
         return state.accounts?.buckets?.[label] ?? fallback;
     }
@@ -21,6 +30,14 @@ function getLiquidityBreakdown() {
     state.categories.forEach(sec => {
         sec.items.forEach(item => {
             if(item.label === 'Food Base' || item.label === 'Weekly Misc') return;
+
+            if (item.label === 'General Savings' && state.accounts?.savingsBuckets) {
+                Object.entries(state.accounts.savingsBuckets).forEach(([key, amount]) => {
+                    items.push({ label: `Savings: ${key}`, amount: amount });
+                    totalLiquid += amount;
+                });
+                return;
+            }
 
             const currentVal = getItemBalance(item.label, item.amount);
             items.push({ label: item.label, amount: currentVal });

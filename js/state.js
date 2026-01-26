@@ -108,10 +108,15 @@ function migrateState() {
             state.accounts = {
                 surplus: state.surplus || 0,
                 weekly: state.weekly || { balance: getWeeklyConfigAmount(), week: 1 },
-                buckets: {}
+                buckets: {},
+                savingsBuckets: {}
             };
         }
         if (!state.accounts.buckets) state.accounts.buckets = {};
+        if (!state.accounts.savingsBuckets) {
+            const seed = state.accounts.buckets['General Savings'] ?? 0;
+            state.accounts.savingsBuckets = { Main: seed };
+        }
         ACCOUNT_LABELS.forEach(label => {
             if (state.accounts.buckets[label] === undefined) {
                 const legacy = state.balances?.[label];
@@ -148,6 +153,9 @@ function migrateState() {
                 'Payables': buckets['Payables'] ?? 0,
                 'Car Fund': buckets['Car Fund'] ?? 0,
                 'Weekly Misc': buckets['Weekly Misc'] ?? 0
+            },
+            savingsBuckets: {
+                Main: buckets['General Savings'] ?? 0
             }
         },
         balances: Object.keys(legacyBalances).reduce((acc, key) => {
@@ -274,6 +282,9 @@ function initSurplusFromOpening() {
         state.accounts = { surplus: 0, weekly: { balance: getWeeklyConfigAmount(), week: 1 }, buckets: {} };
     }
     if (!state.accounts.buckets) state.accounts.buckets = {};
+    if (!state.accounts.savingsBuckets) {
+        state.accounts.savingsBuckets = { Main: state.accounts.buckets['General Savings'] ?? 0 };
+    }
 
     state.categories.forEach(sec => {
         sec.items.forEach(item => {

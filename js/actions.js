@@ -17,11 +17,18 @@ function ensureAccountsState() {
         state.accounts.weekly = { balance: getWeeklyConfigAmount(), week: 1 };
     }
     if (!state.accounts.buckets) state.accounts.buckets = {};
+    if (!state.accounts.savingsBuckets) {
+        const seed = state.accounts.buckets['General Savings'] ?? 0;
+        state.accounts.savingsBuckets = { Main: seed };
+    }
 }
 
 function setItemBalance(label, value) {
     ensureAccountsState();
-    if (isAccountLabel(label)) {
+    if (label === 'General Savings') {
+        state.accounts.savingsBuckets.Main = value;
+        syncSavingsTotal();
+    } else if (isAccountLabel(label)) {
         state.accounts.buckets[label] = value;
     } else {
         state.balances[label] = value;
@@ -32,7 +39,14 @@ function removeItemBalance(label) {
     if (isAccountLabel(label)) {
         // Keep account buckets, zero them instead of deleting
         ensureAccountsState();
-        state.accounts.buckets[label] = 0;
+        if (label === 'General Savings') {
+            Object.keys(state.accounts.savingsBuckets).forEach(key => {
+                state.accounts.savingsBuckets[key] = 0;
+            });
+            syncSavingsTotal();
+        } else {
+            state.accounts.buckets[label] = 0;
+        }
     } else if (state.balances[label] !== undefined) {
         delete state.balances[label];
     }
@@ -41,6 +55,16 @@ function removeItemBalance(label) {
 function adjustItemBalance(label, delta) {
     const current = getItemBalance(label, 0);
     setItemBalance(label, current + delta);
+}
+
+function getSavingsTotal() {
+    ensureAccountsState();
+    return Object.values(state.accounts.savingsBuckets).reduce((sum, val) => sum + (val || 0), 0);
+}
+
+function syncSavingsTotal() {
+    ensureAccountsState();
+    state.accounts.buckets['General Savings'] = getSavingsTotal();
 }
 
 function getPlanAmount(label) {
@@ -69,6 +93,9 @@ function applyTransaction(tx) {
                 state.accounts.surplus -= tx.amount;
             } else {
                 adjustItemBalance(tx.from, -tx.amount);
+                if (tx.from === 'Weekly Misc') {
+                    state.accounts.weekly.balance -= tx.amount;
+                }
             }
             if (tx.to === 'Surplus') {
                 state.accounts.surplus += tx.amount;
@@ -987,6 +1014,109 @@ function allocateUnassigned() {
     updateGlobalUI();
 }
 
+// Savings Buckets
+function openSavingsBuckets() {
+    renderSavingsBuckets();
+    toggleModal('savings-buckets-modal', true);
+}
+
+function closeSavingsBuckets() {
+    toggleModal('savings-buckets-modal', false);
+}
+
+function adjustSavingsBucket(bucketKey, delta) {
+    ensureAccountsState();
+    if (state.accounts.savingsBuckets[bucketKey] === undefined) {
+        state.accounts.savingsBuckets[bucketKey] = 0;
+    }
+    state.accounts.savingsBuckets[bucketKey] += delta;
+    if (state.accounts.savingsBuckets[bucketKey] < 0) {
+        state.accounts.savingsBuckets[bucketKey] = 0;
+    }
+    syncSavingsTotal();
+}
+
+function getSavingsBucketAmount(bucketKey) {
+    ensureAccountsState();
+    return state.accounts.savingsBuckets[bucketKey] || 0;
+}
+
+function renderSavingsBuckets() {
+    ensureAccountsState();
+    const list = document.getElementById('savings-buckets-list');
+    if (!list) return;
+    const entries = Object.entries(state.accounts.savingsBuckets);
+    if (!entries.length) {
+        list.innerHTML = '<div class="text-center text-[10px] text-slate-300 py-2">No buckets yet</div>';
+        return;
+    }
+    list.innerHTML = entries.map(([key, amount]) => `
+        <div class="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
+            <div>
+                <span class="block text-xs font-bold text-slate-800">${key}</span>
+                <span class="text-[10px] text-slate-400">${formatMoney(amount)} ${getCurrencyLabel()}</span>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="applySavingsBucketDelta('${key}', 1)" class="bg-emerald-100 text-emerald-700 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">Add</button>
+                <button onclick="applySavingsBucketDelta('${key}', -1)" class="bg-red-100 text-red-600 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">Deduct</button>
+                <button onclick="transferSavingsBucketToSurplus('${key}')" class="bg-slate-200 text-slate-700 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">To Surplus</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function applySavingsBucketDelta(bucketKey, dir) {
+    const val = parseFloat(document.getElementById('savings-bucket-amount').value);
+    if (!val || val <= 0) return;
+    pushToUndo();
+    if (dir > 0) {
+        if(!canApplySurplusDelta(-val)) return;
+        adjustSavingsBucket(bucketKey, val);
+        applyTransaction({ type: 'adjust_surplus', delta: -val });
+    } else {
+        const available = getSavingsBucketAmount(bucketKey);
+        const take = Math.min(val, available);
+        if (take <= 0) return;
+        adjustSavingsBucket(bucketKey, -take);
+        applyTransaction({ type: 'adjust_surplus', delta: take });
+    }
+    saveState();
+    renderSavingsBuckets();
+    updateGlobalUI();
+}
+
+function transferSavingsBucketToSurplus(bucketKey) {
+    const val = parseFloat(document.getElementById('savings-bucket-amount').value);
+    if (!val || val <= 0) return;
+    pushToUndo();
+    const available = getSavingsBucketAmount(bucketKey);
+    const take = Math.min(val, available);
+    if (take <= 0) return;
+    adjustSavingsBucket(bucketKey, -take);
+    applyTransaction({ type: 'adjust_surplus', delta: take });
+    saveState();
+    renderSavingsBuckets();
+    updateGlobalUI();
+}
+
+function createSavingsBucket() {
+    const input = document.getElementById('savings-bucket-name');
+    const name = input?.value?.trim();
+    if (!name) return;
+    ensureAccountsState();
+    if (state.accounts.savingsBuckets[name] !== undefined) {
+        alert('Bucket already exists.');
+        return;
+    }
+    pushToUndo();
+    state.accounts.savingsBuckets[name] = 0;
+    syncSavingsTotal();
+    input.value = '';
+    saveState();
+    renderSavingsBuckets();
+    updateGlobalUI();
+}
+
 // Settings
 function saveSettingsFromUI() {
     const currencyInput = document.getElementById('settings-currency');
@@ -1023,7 +1153,12 @@ function rebuildTotals() {
     state.categories.forEach(sec => {
         sec.items.forEach(item => {
             if (isAccountLabel(item.label)) {
-                if (state.accounts.buckets[item.label] === undefined) {
+                if (item.label === 'General Savings') {
+                    if (state.accounts.savingsBuckets.Main === undefined) {
+                        state.accounts.savingsBuckets.Main = item.amount;
+                    }
+                    syncSavingsTotal();
+                } else if (state.accounts.buckets[item.label] === undefined) {
                     state.accounts.buckets[item.label] = item.amount;
                 }
             } else if (state.balances[item.label] === undefined) {

@@ -58,6 +58,23 @@ textarea,
         -webkit-appearance: none;
         appearance: none;
     }
+
+    .weekly-hero {
+        overflow: hidden;
+    }
+
+    .weekly-inline-controls {
+        flex-wrap: wrap;
+    }
+
+    .weekly-inline-controls input {
+        flex: 1 1 100%;
+    }
+
+    .weekly-inline-controls button {
+        flex: 1 1 30%;
+        min-width: 90px;
+    }
 }
 
 /* --- STABLE STYLING --- */
