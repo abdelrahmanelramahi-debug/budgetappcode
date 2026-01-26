@@ -958,28 +958,11 @@ function getAllocatableItems() {
     return items;
 }
 
-function allocateByPlan(amount) {
-    const items = getAllocatableItems();
-    const totalPlan = items.reduce((sum, i) => sum + i.amount, 0);
-    if (totalPlan <= 0) return;
-
-    items.forEach(item => {
-        const portion = (item.amount / totalPlan) * amount;
-        if (portion > 0) {
-            applyTransaction({ type: 'transfer', from: 'Surplus', to: item.label, amount: portion });
-            logHistory(item.label, portion, 'Paycheck');
-        }
-    });
-}
-
-function applyPaycheck(autoAllocate) {
+function applyPaycheckAdd() {
     const val = parseFloat(document.getElementById('paycheck-amount').value);
     if(!val || val <= 0) return;
     pushToUndo();
     applyTransaction({ type: 'adjust_surplus', delta: val });
-    if (autoAllocate) {
-        allocateByPlan(val);
-    }
     document.getElementById('paycheck-amount').value = '';
     saveState();
     renderLedger();
@@ -987,9 +970,10 @@ function applyPaycheck(autoAllocate) {
     updateGlobalUI();
 }
 
-function allocateUnassigned() {
-    const surplus = state.accounts.surplus;
-    if (surplus <= 0) return;
+function applyPaycheckDistribute() {
+    const val = parseFloat(document.getElementById('paycheck-amount').value);
+    if(!val || val <= 0) return;
+
     const items = getAllocatableItems().map(item => {
         const current = getItemBalance(item.label, 0);
         const deficit = Math.max(0, item.amount - current);
@@ -997,17 +981,36 @@ function allocateUnassigned() {
     }).filter(item => item.deficit > 0);
 
     const totalDeficit = items.reduce((sum, i) => sum + i.deficit, 0);
-    if (totalDeficit <= 0) return;
 
-    const toAllocate = Math.min(surplus, totalDeficit);
     pushToUndo();
+    applyTransaction({ type: 'adjust_surplus', delta: val });
+
+    if (totalDeficit <= 0) {
+        alert('All planned categories are already funded. The paycheck was added to Surplus.');
+        document.getElementById('paycheck-amount').value = '';
+        saveState();
+        renderLedger();
+        renderStrategy();
+        updateGlobalUI();
+        return;
+    }
+
     items.forEach(item => {
-        const portion = (item.deficit / totalDeficit) * toAllocate;
-        if (portion > 0) {
-            applyTransaction({ type: 'transfer', from: 'Surplus', to: item.label, amount: portion });
-            logHistory(item.label, portion, 'Auto Allocate');
+        if (item.deficit > 0) {
+            applyTransaction({ type: 'transfer', from: 'Surplus', to: item.label, amount: item.deficit });
+            logHistory(item.label, item.deficit, 'Distribute');
         }
     });
+
+    const leftoverFromPaycheck = Math.max(0, val - totalDeficit);
+    if (leftoverFromPaycheck > 0) {
+        alert(`Fully funded all planned categories. ${formatMoney(leftoverFromPaycheck)} ${getCurrencyLabel()} stayed in Surplus.`);
+    } else if (totalDeficit > val) {
+        const shortfall = totalDeficit - val;
+        alert(`Plan required more than this paycheck. ${formatMoney(shortfall)} ${getCurrencyLabel()} was taken from Surplus.`);
+    }
+
+    document.getElementById('paycheck-amount').value = '';
     saveState();
     renderLedger();
     renderStrategy();

@@ -157,14 +157,13 @@
                 <div class="flex items-center justify-between">
                     <div>
                         <span class="text-[10px] font-bold uppercase tracking-widest text-slate-500">Paycheck</span>
-                        <p class="text-[10px] text-slate-400 mt-1">Add funds to Surplus or auto‑allocate by plan.</p>
+                        <p class="text-[10px] text-slate-400 mt-1">Add money to Surplus or distribute across planned budgets.</p>
                     </div>
                 </div>
                 <div class="flex flex-wrap gap-2">
                     <input type="number" id="paycheck-amount" placeholder="Amount..." class="flex-1 min-w-[140px] bg-slate-50 border-none rounded-xl px-4 text-sm font-bold outline-none">
-                    <button onclick="applyPaycheck(false)" class="bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase">Add</button>
-                    <button onclick="applyPaycheck(true)" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase">Allocate</button>
-                    <button onclick="allocateUnassigned()" class="bg-emerald-50 text-emerald-600 px-4 py-2 rounded-lg text-xs font-bold uppercase">Allocate Unassigned</button>
+                    <button onclick="applyPaycheckAdd()" class="bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase">Add</button>
+                    <button onclick="applyPaycheckDistribute()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase">Distribute</button>
                 </div>
             </div>
             
