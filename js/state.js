@@ -117,6 +117,9 @@ function migrateState() {
             const seed = state.accounts.buckets['General Savings'] ?? 0;
             state.accounts.savingsBuckets = { Main: seed };
         }
+        if (!state.accounts.savingsDefaultBucket) {
+            state.accounts.savingsDefaultBucket = 'Main';
+        }
         ACCOUNT_LABELS.forEach(label => {
             if (state.accounts.buckets[label] === undefined) {
                 const legacy = state.balances?.[label];
@@ -156,7 +159,8 @@ function migrateState() {
             },
             savingsBuckets: {
                 Main: buckets['General Savings'] ?? 0
-            }
+            },
+            savingsDefaultBucket: 'Main'
         },
         balances: Object.keys(legacyBalances).reduce((acc, key) => {
             if (!ACCOUNT_LABELS.includes(key)) acc[key] = legacyBalances[key];
@@ -284,6 +288,9 @@ function initSurplusFromOpening() {
     if (!state.accounts.buckets) state.accounts.buckets = {};
     if (!state.accounts.savingsBuckets) {
         state.accounts.savingsBuckets = { Main: state.accounts.buckets['General Savings'] ?? 0 };
+    }
+    if (!state.accounts.savingsDefaultBucket) {
+        state.accounts.savingsDefaultBucket = 'Main';
     }
 
     state.categories.forEach(sec => {
