@@ -59,6 +59,20 @@ textarea,
         appearance: none;
     }
 
+    .premium-card {
+        overflow: hidden;
+    }
+
+    .premium-card .flex {
+        flex-wrap: wrap;
+    }
+
+    .premium-card .flex > button,
+    .premium-card .flex > input,
+    .premium-card .flex > select {
+        max-width: 100%;
+    }
+
     .weekly-hero {
         overflow: hidden;
     }

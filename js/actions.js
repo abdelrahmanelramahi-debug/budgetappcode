@@ -21,12 +21,19 @@ function ensureAccountsState() {
         const seed = state.accounts.buckets['General Savings'] ?? 0;
         state.accounts.savingsBuckets = { Main: seed };
     }
+    if (!state.accounts.savingsDefaultBucket) {
+        state.accounts.savingsDefaultBucket = 'Main';
+    }
 }
 
 function setItemBalance(label, value) {
     ensureAccountsState();
     if (label === 'General Savings') {
-        state.accounts.savingsBuckets.Main = value;
+        const target = state.accounts.savingsDefaultBucket || 'Main';
+        if (state.accounts.savingsBuckets[target] === undefined) {
+            state.accounts.savingsBuckets[target] = 0;
+        }
+        state.accounts.savingsBuckets[target] = value;
         syncSavingsTotal();
     } else if (isAccountLabel(label)) {
         state.accounts.buckets[label] = value;
@@ -53,6 +60,10 @@ function removeItemBalance(label) {
 }
 
 function adjustItemBalance(label, delta) {
+    if (label === 'General Savings') {
+        adjustSavingsTotal(delta);
+        return;
+    }
     const current = getItemBalance(label, 0);
     setItemBalance(label, current + delta);
 }
@@ -65,6 +76,41 @@ function getSavingsTotal() {
 function syncSavingsTotal() {
     ensureAccountsState();
     state.accounts.buckets['General Savings'] = getSavingsTotal();
+}
+
+function adjustSavingsTotal(delta) {
+    if (delta === 0) return;
+    if (delta > 0) {
+        creditSavings(delta);
+    } else {
+        debitSavings(Math.abs(delta));
+    }
+}
+
+function creditSavings(amount) {
+    ensureAccountsState();
+    const target = state.accounts.savingsDefaultBucket || 'Main';
+    if (state.accounts.savingsBuckets[target] === undefined) {
+        state.accounts.savingsBuckets[target] = 0;
+    }
+    state.accounts.savingsBuckets[target] += amount;
+    syncSavingsTotal();
+}
+
+function debitSavings(amount) {
+    ensureAccountsState();
+    let remaining = amount;
+    const target = state.accounts.savingsDefaultBucket || 'Main';
+    const keys = Object.keys(state.accounts.savingsBuckets);
+    const order = [target, ...keys.filter(k => k !== target)];
+    order.forEach(key => {
+        if (remaining <= 0) return;
+        const available = state.accounts.savingsBuckets[key] || 0;
+        const take = Math.min(available, remaining);
+        state.accounts.savingsBuckets[key] = available - take;
+        remaining -= take;
+    });
+    syncSavingsTotal();
 }
 
 function getPlanAmount(label) {
@@ -1049,20 +1095,36 @@ function renderSavingsBuckets() {
     const list = document.getElementById('savings-buckets-list');
     if (!list) return;
     const entries = Object.entries(state.accounts.savingsBuckets);
+    const defaultBucket = state.accounts.savingsDefaultBucket || 'Main';
+
+    const defaultSelect = `
+        <div class="bg-slate-50 p-3 rounded-xl mb-3">
+            <label class="text-[9px] font-bold uppercase text-slate-400">Default Incoming Bucket</label>
+            <select id="savings-default-bucket" class="w-full bg-transparent text-sm font-black outline-none mt-1" onchange="updateSavingsDefaultBucket(this.value)">
+                ${entries.map(([key]) => `<option value="${key}" ${key === defaultBucket ? 'selected' : ''}>${key}</option>`).join('')}
+            </select>
+        </div>
+    `;
     if (!entries.length) {
-        list.innerHTML = '<div class="text-center text-[10px] text-slate-300 py-2">No buckets yet</div>';
+        list.innerHTML = defaultSelect + '<div class="text-center text-[10px] text-slate-300 py-2">No buckets yet</div>';
         return;
     }
-    list.innerHTML = entries.map(([key, amount]) => `
+    list.innerHTML = defaultSelect + entries.map(([key, amount]) => `
         <div class="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
             <div>
                 <span class="block text-xs font-bold text-slate-800">${key}</span>
                 <span class="text-[10px] text-slate-400">${formatMoney(amount)} ${getCurrencyLabel()}</span>
             </div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 flex-wrap">
                 <button onclick="applySavingsBucketDelta('${key}', 1)" class="bg-emerald-100 text-emerald-700 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">Add</button>
                 <button onclick="applySavingsBucketDelta('${key}', -1)" class="bg-red-100 text-red-600 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">Deduct</button>
                 <button onclick="transferSavingsBucketToSurplus('${key}')" class="bg-slate-200 text-slate-700 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">To Surplus</button>
+                <select onchange="moveSavingsBucket('${key}', this.value)" class="bg-white border border-slate-200 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">
+                    <option value="">Move To...</option>
+                    ${entries.filter(([target]) => target !== key).map(([target]) => `<option value="${target}">${target}</option>`).join('')}
+                </select>
+                <button onclick="renameSavingsBucket('${key}')" class="bg-indigo-100 text-indigo-700 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">Rename</button>
+                <button onclick="deleteSavingsBucket('${key}')" class="bg-rose-100 text-rose-700 px-2 py-1 rounded-lg text-[10px] font-bold uppercase">Delete</button>
             </div>
         </div>
     `).join('');
@@ -1102,6 +1164,23 @@ function transferSavingsBucketToSurplus(bucketKey) {
     updateGlobalUI();
 }
 
+function moveSavingsBucket(fromKey, toKey) {
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    const val = parseFloat(document.getElementById('savings-bucket-amount').value);
+    if (!val || val <= 0) return;
+    ensureAccountsState();
+    const available = getSavingsBucketAmount(fromKey);
+    const take = Math.min(val, available);
+    if (take <= 0) return;
+    pushToUndo();
+    state.accounts.savingsBuckets[fromKey] = available - take;
+    state.accounts.savingsBuckets[toKey] = (state.accounts.savingsBuckets[toKey] || 0) + take;
+    syncSavingsTotal();
+    saveState();
+    renderSavingsBuckets();
+    updateGlobalUI();
+}
+
 function createSavingsBucket() {
     const input = document.getElementById('savings-bucket-name');
     const name = input?.value?.trim();
@@ -1115,6 +1194,55 @@ function createSavingsBucket() {
     state.accounts.savingsBuckets[name] = 0;
     syncSavingsTotal();
     input.value = '';
+    saveState();
+    renderSavingsBuckets();
+    updateGlobalUI();
+}
+
+function updateSavingsDefaultBucket(value) {
+    if (!value) return;
+    ensureAccountsState();
+    state.accounts.savingsDefaultBucket = value;
+    saveState();
+}
+
+function renameSavingsBucket(oldName) {
+    const newName = prompt('Rename bucket:', oldName);
+    if (!newName || newName.trim() === '' || newName === oldName) return;
+    ensureAccountsState();
+    if (state.accounts.savingsBuckets[newName] !== undefined) {
+        alert('Bucket already exists.');
+        return;
+    }
+    pushToUndo();
+    state.accounts.savingsBuckets[newName] = state.accounts.savingsBuckets[oldName] || 0;
+    delete state.accounts.savingsBuckets[oldName];
+    if (state.accounts.savingsDefaultBucket === oldName) {
+        state.accounts.savingsDefaultBucket = newName;
+    }
+    syncSavingsTotal();
+    saveState();
+    renderSavingsBuckets();
+    updateGlobalUI();
+}
+
+function deleteSavingsBucket(name) {
+    ensureAccountsState();
+    const remaining = Object.keys(state.accounts.savingsBuckets).length;
+    if (remaining <= 1) {
+        alert('You must keep at least one bucket.');
+        return;
+    }
+    const proceed = confirm(`Delete "${name}" bucket and move its funds to Surplus?`);
+    if (!proceed) return;
+    const amount = state.accounts.savingsBuckets[name] || 0;
+    pushToUndo();
+    delete state.accounts.savingsBuckets[name];
+    if (state.accounts.savingsDefaultBucket === name) {
+        state.accounts.savingsDefaultBucket = Object.keys(state.accounts.savingsBuckets)[0];
+    }
+    syncSavingsTotal();
+    applyTransaction({ type: 'adjust_surplus', delta: amount });
     saveState();
     renderSavingsBuckets();
     updateGlobalUI();
