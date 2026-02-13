@@ -248,6 +248,7 @@ function renderLedger() {
     const carBal = getBal('Car Fund');
     const payBal = getBal('Payables');
 
+    // Major funds summary cards (General Savings, Car Fund, Payables)
     const majorHtml = `
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
             <!-- General Savings -->
