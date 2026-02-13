@@ -1,0 +1,26 @@
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Node / JS
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# Local cache / temp
+.cache/
+.parcel-cache/
+.tmp/
+tmp/
+*.log
